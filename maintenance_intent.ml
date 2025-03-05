@@ -7,8 +7,12 @@ let ocaml_versions = [
 module S = Set.Make(String)
 module M = Map.Make(String)
 
-let version s =
+let package s =
   let dot = String.index s '.' in
+  String.sub s 0 dot
+
+let version s =
+  let dot = succ (String.index s '.') in
   String.sub s dot (String.length s - dot)
 
 let env =
@@ -20,31 +24,34 @@ let env =
     ~os_version:"10"
     ()
 
-let context dir compiler_version =
+let context ?(constraints = []) dir compiler_version =
   let constraints =
-    OpamPackage.Name.Map.of_list [
-      OpamPackage.Name.of_string "ocaml",
-      (`Eq, OpamPackage.Version.of_string compiler_version)
-    ]
+    OpamPackage.Name.Map.of_list
+      ((OpamPackage.Name.of_string "ocaml",
+        (`Eq, OpamPackage.Version.of_string compiler_version)) :: constraints)
   in
   Opam_0install.Dir_context.create (dir ^ "/packages") ~constraints ~env
 
 module Solver = Opam_0install.Solver.Make(Opam_0install.Dir_context)
 
-let solve context package =
+let solve ~retain_all context package =
   let pkg = OpamPackage.Name.of_string package in
   let result = Solver.solve context [ pkg ] in
   match result with
   | Error e -> Error (Solver.diagnostics e)
   | Ok selections ->
-    Ok (List.find (fun p -> OpamPackage.Name.equal (OpamPackage.name p) pkg)
-          (Solver.packages_of_result selections))
+    let pkgs = Solver.packages_of_result selections in
+    if retain_all then
+      Ok pkgs
+    else
+      Ok [ List.find (fun p -> OpamPackage.Name.equal (OpamPackage.name p) pkg)
+            pkgs ]
 
-let solve_by_ocaml_version contexts package_name =
+let solve_by_ocaml_version ?(retain_all = false) contexts package_name =
   let to_keep =
     List.fold_left2 (fun acc context ocaml_version ->
-        match solve context package_name with
-        | Ok pkg -> S.add (OpamPackage.to_string pkg) acc
+        match solve ~retain_all context package_name with
+        | Ok pkgs -> S.union (S.of_list (List.map OpamPackage.to_string pkgs)) acc
         | Error _ -> Logs.warn (fun m -> m "%s for ocaml %s got no solution" package_name ocaml_version); acc)
       S.empty contexts ocaml_versions
   in
@@ -485,22 +492,44 @@ let jump () opam_repository pkgs pkg_all remove_file =
         OpamPackage.Set.remove (OpamPackage.of_string rm) opams)
       all_opams to_remove
   in
-  let foreach path () =
+  let foreach path acc =
     match should_consider ~excluded:to_remove path with
-    | None -> ()
+    | None -> acc
     | Some (pkg_version, opam) ->
       let r, exp = is_installable all_opams opam in
-      if not r then
-        Logs.app (fun m -> m "pkg %s not installable: %a" pkg_version
-                     Fmt.(list ~sep:(any ", ") string)
-                     (List.map (fun (_, _, r) -> r) exp))
+      if r then
+        acc
+      else
+        (Logs.warn (fun m -> m "pkg %s not installable: %a" pkg_version
+                       Fmt.(list ~sep:(any ", ") string)
+                       (List.map (fun (_, _, r) -> r) exp));
+         pkg_version :: acc)
   in
   let* r =
-    Bos.OS.Dir.fold_contents foreach () pkg_dir
+    Bos.OS.Dir.fold_contents foreach [] pkg_dir
   in
   (* Phase 3: figure out what to not delete
      (run the solver again to figure which exact versions to restore) *)
-  ignore (r);
+  let to_remove_set = S.of_list to_remove in
+  let retain =
+    List.fold_left (fun acc pkg ->
+        let package, version = package pkg, version pkg in
+        let constraints =
+          [ OpamPackage.Name.of_string package,
+            (`Eq, OpamPackage.Version.of_string version) ]
+        in
+        let contexts =
+          List.map (context ~constraints opam_repository) ocaml_versions
+        in
+        let retain = solve_by_ocaml_version ~retain_all:true contexts package in
+        let to_retain = S.inter to_remove_set retain in
+        Logs.app (fun m -> m "pkg %s: retaining %a" pkg
+                      Fmt.(list ~sep:(any ", ") string) (S.elements to_retain));
+        S.union acc to_retain
+      ) S.empty r
+  in
+  Logs.info (fun m -> m "will retain: %a" Fmt.(list ~sep:(any ", ") string)
+                (S.elements retain));
   Ok ()
 
 let setup_log style_renderer level =
