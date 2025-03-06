@@ -544,6 +544,7 @@ let jump () opam_repository pkgs pkg_all remove_file =
                (S.cardinal to_remove_set)
                Fmt.(list ~sep:(any ", ") string)
                (S.elements remove));
+  List.iter (fun pkg -> Logs.app (fun m -> m "PHASE3 ARCHIVING %s" pkg)) (S.elements remove);
   Ok ()
 
 let setup_log style_renderer level =
