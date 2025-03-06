@@ -221,6 +221,7 @@ let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
     List.iter (fun pkg -> Logs.app (fun m -> m "ARCHIVING (any) %s" pkg)) remove;
     remove
   | Mintent.M.Last 1 :: [] ->
+    (* TODO do we need to filter out pre-releases if they're the latest? *)
     (* latest! we go through all ocaml versions and find the latest package *)
     let keeping = solve_by_ocaml_version contexts pkg in
     (* let opams = find_latest sorted in
