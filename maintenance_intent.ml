@@ -52,7 +52,7 @@ let solve_by_ocaml_version ?(retain_all = false) contexts package_name =
     List.fold_left2 (fun acc context ocaml_version ->
         match solve ~retain_all context package_name with
         | Ok pkgs -> S.union (S.of_list (List.map OpamPackage.to_string pkgs)) acc
-        | Error _ -> Logs.warn (fun m -> m "%s for ocaml %s got no solution" package_name ocaml_version); acc)
+        | Error _ -> Logs.info (fun m -> m "%s for ocaml %s got no solution" package_name ocaml_version); acc)
       S.empty contexts ocaml_versions
   in
   (*Logs.app (fun m -> m "0install keeping %a" Fmt.(list ~sep:(any ", ") string)
@@ -218,7 +218,7 @@ let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
       S.elements (S.diff s (S.of_list keeping))
     in
     (* Logs.app (fun m -> m "%s intent is any" pkg); *)
-    List.iter (fun pkg -> Logs.app (fun m -> m "REMOVING (any) %s" pkg)) remove;
+    List.iter (fun pkg -> Logs.app (fun m -> m "ARCHIVING (any) %s" pkg)) remove;
     remove
   | Mintent.M.Last 1 :: [] ->
     (* latest! we go through all ocaml versions and find the latest package *)
@@ -230,13 +230,13 @@ let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
       S.elements (S.diff (S.of_list (List.map fst sorted)) keeping)
     in
     (*Logs.app (fun m -> m "%s intent is latest" pkg);*)
-    List.iter (fun pkg -> Logs.app (fun m -> m "REMOVING (latest) %s" pkg))
+    List.iter (fun pkg -> Logs.app (fun m -> m "ARCHIVING (latest) %s" pkg))
       remove;
     remove
   | Mintent.M.Last 0 :: [] ->
     (*Logs.app (fun m -> m "%s intent is none, keeping nothing" pkg);*)
     let remove = List.map fst sorted in
-    List.iter (fun pkg -> Logs.app (fun m -> m "REMOVING (none) %s" pkg))
+    List.iter (fun pkg -> Logs.app (fun m -> m "ARCHIVING (none) %s" pkg))
       remove;
     remove
   | _ ->
@@ -247,7 +247,7 @@ let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
     in
     let int = Mintent.M.string_of_intent intent in
     Logs.warn (fun m -> m "%s intent is %s (not handled)" pkg int);
-    List.iter (fun pkg -> Logs.app (fun m -> m "REMOVING (%s) %s" int pkg))
+    List.iter (fun pkg -> Logs.app (fun m -> m "ARCHIVING (%s) %s" int pkg))
       remove;
     remove
 
@@ -420,15 +420,11 @@ let is_installable opams opam =
       let e =
         if not r then begin
           let cond = condition_to_string condition in
-          let pkg_name, pkg_ver =
-            OpamPackage.Name.to_string (OpamFile.OPAM.name opam),
-            OpamPackage.Version.to_string (OpamFile.OPAM.version opam)
-          in
           let reason =
             "\"" ^ OpamPackage.Name.to_string name ^ "\"" ^
             (if cond = "" then "" else " { " ^ cond ^ " }")
           in
-          (pkg_name, pkg_ver, reason) :: e
+          reason :: e
         end else
           e
       in
@@ -445,13 +441,22 @@ let is_installable opams opam =
   in
   deps_good [] current_deps
 
+let ignore_packages = S.of_list [
+    "ocaml-variants.4.00.1+mirage-xen" ; (* "xenbigarray" { post } *)
+    "conf-freeglut.1" ; (* { build & os-distribution != "debian" & os-distribution != "ubuntu" & not os-distribution = "ol" | not os-version < "9" } *)
+    "ocaml-option-spacetime.1" ; (* "ocaml-variants" { post & >= "4.12.0~" & < "4.12" } *)
+    "ocamlmig.5.2-20250129" ; (* "ocamlformat-rpc-lib" { "1" = "0" & = version } *)
+    "ocamlmig.5.2-20250228" ; (* "ocamlformat-rpc-lib" { "1" = "0" & = version } *)
+]
+
 let jump () opam_repository pkgs pkg_all remove_file =
   let ( let* ) = Result.bind in
   let pkg_dir = Fpath.(v opam_repository / "packages") in
   let* _ = Bos.OS.Dir.must_exist pkg_dir in
   let contexts = List.map (context opam_repository) ocaml_versions in
   let pkgs = eval_pkgs pkg_dir pkgs pkg_all in
-  (* Phase 1: a set of candidates to remove based on maintenance intent *)
+  (* Phase 1: a set of candidates to archive based on maintenance intent *)
+  Logs.app (fun m -> m "PHASE1 finding packages to archive (based on maintenance intent)");
   let* to_remove =
     match remove_file with
     | Some filename ->
@@ -459,8 +464,8 @@ let jump () opam_repository pkgs pkg_all remove_file =
       let* lines = Bos.OS.File.read_lines (Fpath.v filename) in
       let pkgs =
         List.fold_left (fun acc line ->
-            if String.starts_with ~prefix:"REMOVING" line then
-              let second_space = succ (String.index_from line 9 ' ') in
+            if String.starts_with ~prefix:"ARCHIVING" line then
+              let second_space = succ (String.index_from line 10 ' ') in
               let pkg =
                 String.sub line second_space (String.length line - second_space)
               in
@@ -480,7 +485,9 @@ let jump () opam_repository pkgs pkg_all remove_file =
           Ok (to_remove @ acc))
         (Ok []) pkgs
   in
+  Logs.app (fun m -> m "PHASE1 completed with %u packages" (List.length to_remove));
   (* Phase 2: evaluate which packages would have unsatisfied dependencies *)
+  Logs.app (fun m -> m "PHASE2 finding packages that are no longer installable");
   let all_opams =
     (OpamPackage.keys
        (OpamRepositoryState.load_opams_from_dir
@@ -499,17 +506,20 @@ let jump () opam_repository pkgs pkg_all remove_file =
       let r, exp = is_installable all_opams opam in
       if r then
         acc
+      else if S.mem pkg_version ignore_packages then
+        acc
       else
-        (Logs.warn (fun m -> m "pkg %s not installable: %a" pkg_version
-                       Fmt.(list ~sep:(any ", ") string)
-                       (List.map (fun (_, _, r) -> r) exp));
+        (Logs.app (fun m -> m "%s is not installable anymore, due to: %a" pkg_version
+                       Fmt.(list ~sep:(any ", ") string) exp);
          pkg_version :: acc)
   in
   let* r =
     Bos.OS.Dir.fold_contents foreach [] pkg_dir
   in
+  Logs.app (fun m -> m "PHASE2 completed with %u packages" (List.length r));
   (* Phase 3: figure out what to not delete
      (run the solver again to figure which exact versions to restore) *)
+  Logs.app (fun m -> m "PHASE3 figuring out which packages to retain from PHASE1 to avoid uninstallable packages");
   let to_remove_set = S.of_list to_remove in
   let retain =
     List.fold_left (fun acc pkg ->
@@ -523,13 +533,17 @@ let jump () opam_repository pkgs pkg_all remove_file =
         in
         let retain = solve_by_ocaml_version ~retain_all:true contexts package in
         let to_retain = S.inter to_remove_set retain in
-        Logs.app (fun m -> m "pkg %s: retaining %a" pkg
+        Logs.app (fun m -> m "%s retaining %a" pkg
                       Fmt.(list ~sep:(any ", ") string) (S.elements to_retain));
         S.union acc to_retain
       ) S.empty r
   in
-  Logs.info (fun m -> m "will retain: %a" Fmt.(list ~sep:(any ", ") string)
-                (S.elements retain));
+  let remove = S.diff to_remove_set retain in
+  Logs.app (fun m -> m "PHASE3 completed, will archive %u packages (%u candidates): %a"
+               (S.cardinal remove)
+               (S.cardinal to_remove_set)
+               Fmt.(list ~sep:(any ", ") string)
+               (S.elements remove));
   Ok ()
 
 let setup_log style_renderer level =
