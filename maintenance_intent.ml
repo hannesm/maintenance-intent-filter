@@ -1,3 +1,5 @@
+let () = Logs_threaded.enable ()
+let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 
 let ocaml_versions = [
   "4.08.1"; "4.09.1"; "4.10.2"; "4.11.2"; "4.12.1"; "4.13.1"; "4.14.2";
@@ -397,8 +399,24 @@ let to_ignore = S.of_list [
     "stdune" ; "xdg" ; "fs-io" ; "top-closure" ; (* for the rocq folks *)
 ]
 
+let rec terminate acc orphans = match Miou.care orphans with
+  | None -> acc
+  | Some None -> Miou.yield (); terminate acc orphans
+  | Some (Some prm) ->
+      match Miou.await_exn prm with
+      | Some pkg_version -> terminate (pkg_version :: acc) orphans
+      | None -> terminate acc orphans
+
+let rec clean_up acc orphans = match Miou.care orphans with
+  | None | Some None -> acc
+  | Some (Some prm) ->
+      match Miou.await_exn prm with
+      | Some pkg_version -> clean_up (pkg_version :: acc) orphans
+      | None -> clean_up acc orphans
+
 let jump () opam_repository pkgs pkg_all remove_file =
   OpamCoreConfig.update ();
+  Miou.run @@ fun () ->
   let ( let* ) = Result.bind in
   let pkg_dir = Fpath.(v opam_repository / "packages") in
   let* _ = Bos.OS.Dir.must_exist pkg_dir in
@@ -426,16 +444,20 @@ let jump () opam_repository pkgs pkg_all remove_file =
       Ok pkgs
     | None ->
       (* Phase 1 for real: figure opam file, x-maintenance-intent, solve what to retain *)
-      List.fold_left (fun acc pkg ->
-          let* acc = acc in
-          if S.mem pkg to_ignore then
-            Ok acc
-          else
-            let* sorted = find_opams_latest_first pkg_dir pkg in
-            let intent = decode_intent pkg (snd (List.hd sorted)) in
-            let to_remove = eval_intent contexts pkg sorted intent in
-            Ok (to_remove @ acc))
-        (Ok []) pkgs
+      let fn0 (pkg : string) =
+        if S.mem pkg to_ignore then
+          Ok []
+        else
+          let* sorted = find_opams_latest_first pkg_dir pkg in
+          let intent = decode_intent pkg (snd (List.hd sorted)) in
+          Ok (eval_intent contexts pkg sorted intent) in
+      let fn1 acc to_remove = match acc, to_remove with
+        | Error _ as err, _ -> err
+        | _, Error exn -> error_msgf "%s" (Printexc.to_string exn)
+        | _, Ok (Error _ as err) -> err
+        | Ok acc, Ok (Ok to_remove)-> Ok (to_remove @ acc) in
+      List.fold_left fn1 (Ok []) (Miou.parallel fn0 pkgs)
+      (* fork + join + merge *)
   in
   Logs.app (fun m -> m "PHASE1 completed with %u packages" (List.length to_remove));
   (* Phase 2: evaluate which packages would have unsatisfied dependencies *)
@@ -451,44 +473,51 @@ let jump () opam_repository pkgs pkg_all remove_file =
         OpamPackage.Set.remove (OpamPackage.of_string rm) opams)
       all_opams to_remove
   in
+  let orphans = Miou.orphans () in
   let foreach path acc =
-    match should_consider ~excluded:to_remove path with
-    | None -> acc
-    | Some (pkg_version, opam) ->
-      let r, exp = is_installable all_opams opam in
-      if r then
-        acc
-      else if S.mem pkg_version ignore_packages then
-        acc
-      else
-        (Logs.app (fun m -> m "%s would not be installable, due to: %a"
-                      pkg_version Fmt.(list ~sep:(any ", ") string) exp);
-         pkg_version :: acc)
+    let acc = clean_up acc orphans in
+    ignore begin Miou.call ~orphans @@ fun () ->
+      match should_consider ~excluded:to_remove path with
+      | None as none -> none
+      | Some (pkg_version, opam) ->
+        let r, exp = is_installable all_opams opam in
+        if r then None
+        else if S.mem pkg_version ignore_packages then None
+        else
+          (Logs.app (fun m -> m "%s would not be installable, due to: %a" pkg_version
+                         Fmt.(list ~sep:(any ", ") string) exp);
+           Some pkg_version) end;
+    acc
   in
-  let* r =
-    Bos.OS.Dir.fold_contents foreach [] pkg_dir
-  in
+  let possibly_errored = Bos.OS.Dir.fold_contents foreach [] pkg_dir in
+  let r1 = terminate [] orphans in
+  let* r0 = possibly_errored in
+  let r = List.rev_append r0 r1 in
   Logs.app (fun m -> m "PHASE2 completed with %u packages" (List.length r));
   (* Phase 3: figure out what to not delete
      (run the solver again to figure which exact versions to restore) *)
   Logs.app (fun m -> m "PHASE3 figuring out which packages to retain from PHASE1 to avoid uninstallable packages");
   let to_remove_set = S.of_list to_remove in
   let retain =
-    List.fold_left (fun acc pkg ->
-        let package, version = package pkg, version pkg in
-        let constraints =
-          [ OpamPackage.Name.of_string package,
-            (`Eq, OpamPackage.Version.of_string version) ]
-        in
-        let contexts =
-          List.map (context ~constraints opam_repository) ocaml_versions
-        in
-        let retain = solve_by_ocaml_version ~retain_all:true contexts package in
-        let to_retain = S.inter to_remove_set retain in
-        Logs.app (fun m -> m "%s retaining %a" pkg
-                      Fmt.(list ~sep:(any ", ") string) (S.elements to_retain));
-        S.union acc to_retain
-      ) S.empty r
+    let fn0 pkg =
+      let package, version = package pkg, version pkg in
+      let constraints =
+        [ OpamPackage.Name.of_string package,
+          (`Eq, OpamPackage.Version.of_string version) ]
+      in
+      let contexts =
+        List.map (context ~constraints opam_repository) ocaml_versions
+      in
+      let retain = solve_by_ocaml_version ~retain_all:true contexts package in
+      let to_retain = S.inter to_remove_set retain in
+      Logs.app (fun m -> m "%s retaining %a" pkg
+                    Fmt.(list ~sep:(any ", ") string) (S.elements to_retain));
+      to_retain in
+    let fn1 acc = function
+      | Error _exn -> acc
+      | Ok to_retain -> S.union acc to_retain in
+    List.fold_left fn1 S.empty (Miou.parallel fn0 r)
+    (* fork + join + merge *)
   in
   let remove = S.diff to_remove_set retain in
   Logs.app (fun m -> m "PHASE3 completed, will archive %u packages (%u candidates): %a"
