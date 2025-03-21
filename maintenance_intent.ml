@@ -59,67 +59,6 @@ let solve_by_ocaml_version ?(retain_all = false) contexts package_name =
                (S.elements to_keep));*)
   to_keep
 
-let find_ocaml_dep v opam =
-  let ocaml_dep = OpamPackage.Name.of_string "ocaml" in
-  let deps = OpamFile.OPAM.depends opam in
-  let dep_matches op filter =
-    match filter with
-    | OpamTypes.FString ver ->
-      begin
-        let r = match op with
-          | `Lt -> OpamVersionCompare.compare v ver <= 0
-          | `Leq | `Eq -> OpamVersionCompare.compare v ver < 0
-          | `Geq -> OpamVersionCompare.compare v ver >= 0
-          | `Gt -> OpamVersionCompare.compare v ver >= 0
-          | `Neq -> false
-        in
-        (*Logs.app (fun m -> m "ocaml version %s op %s ver %s == %B" v
-                     (OpamPrinter.FullPos.relop_kind op)
-                     ver r); *)
-        r
-      end
-    | _ -> false
-  in
-  let rec walk_formula p = function
-    | OpamTypes.Empty -> false
-    | Atom f -> p f
-    | Block formula -> walk_formula p formula
-    | And (a, b) -> walk_formula p a && walk_formula p b
-    | Or (a, b) -> walk_formula p a || walk_formula p b
-  in
-  let p = function
-    | OpamTypes.Filter _ -> false
-    | Constraint (op, filter) -> dep_matches op filter
-  in
-  let rec find_dep = function
-    | OpamFormula.Empty -> false
-    | Atom (name, cond) ->
-      if OpamPackage.Name.equal ocaml_dep name then
-        walk_formula p cond
-      else
-        false
-    | Block x -> find_dep x
-    | And (a, b) ->
-      let a' = find_dep a in
-      let b' = find_dep b in
-      a' || b'
-    | Or (a, b) ->
-      let a' = find_dep a in
-      let b' = find_dep b in
-      a' && b'
-  in
-  find_dep deps
-
-let find_latest opams =
-  List.fold_left (fun acc ocaml_version ->
-      (* Logs.app (fun m -> m "for ocaml version %s" ocaml_version); *)
-      match List.find_opt (fun (_, opam) -> find_ocaml_dep ocaml_version opam) opams with
-      | None -> acc
-      | Some (version, opam) ->
-        (* Logs.app (fun m -> m "keeping %s" version); *)
-        M.add version opam acc
-    ) M.empty ocaml_versions
-
 let pkg_name_and_version path =
   match List.rev (Fpath.segs path) with
   | _opam :: pkg_ver :: pkg :: _rest -> pkg, pkg_ver
@@ -224,9 +163,8 @@ let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
     (* TODO do we need to filter out pre-releases if they're the latest? *)
     (* latest! we go through all ocaml versions and find the latest package *)
     let keeping = solve_by_ocaml_version contexts pkg in
-    (* let opams = find_latest sorted in
-       let opams = List.filter not_maintained (M.bindings opams) in
-       let keeping = List.map fst opams in *)
+    (* TODO what about the x-maintenance: false ones? *)
+    (* let opams = List.filter not_maintained (M.bindings opams) in *)
     let remove =
       S.elements (S.diff (S.of_list (List.map fst sorted)) keeping)
     in
