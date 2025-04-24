@@ -389,6 +389,7 @@ let ignore_packages = S.of_list [
 ]
 
 let jump () opam_repository pkgs pkg_all remove_file =
+  OpamCoreConfig.update ();
   let ( let* ) = Result.bind in
   let pkg_dir = Fpath.(v opam_repository / "packages") in
   let* _ = Bos.OS.Dir.must_exist pkg_dir in
