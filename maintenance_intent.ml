@@ -448,8 +448,8 @@ let jump () opam_repository pkgs pkg_all remove_file =
       else if S.mem pkg_version ignore_packages then
         acc
       else
-        (Logs.app (fun m -> m "%s is not installable anymore, due to: %a" pkg_version
-                       Fmt.(list ~sep:(any ", ") string) exp);
+        (Logs.app (fun m -> m "%s would not be installable, due to: %a"
+                      pkg_version Fmt.(list ~sep:(any ", ") string) exp);
          pkg_version :: acc)
   in
   let* r =
