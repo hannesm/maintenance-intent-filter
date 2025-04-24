@@ -157,7 +157,7 @@ let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
       S.elements (S.diff s (S.of_list keeping))
     in
     (* Logs.app (fun m -> m "%s intent is any" pkg); *)
-    List.iter (fun pkg -> Logs.app (fun m -> m "ARCHIVING (any) %s" pkg)) remove;
+    List.iter (fun pkg -> Logs.app (fun m -> m "CANDIDATE (any) %s" pkg)) remove;
     remove
   | Mintent.M.Last 1 :: [] ->
     (* TODO do we need to filter out pre-releases if they're the latest? *)
@@ -169,13 +169,13 @@ let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
       S.elements (S.diff (S.of_list (List.map fst sorted)) keeping)
     in
     (*Logs.app (fun m -> m "%s intent is latest" pkg);*)
-    List.iter (fun pkg -> Logs.app (fun m -> m "ARCHIVING (latest) %s" pkg))
+    List.iter (fun pkg -> Logs.app (fun m -> m "CANDIDATE (latest) %s" pkg))
       remove;
     remove
   | Mintent.M.Last 0 :: [] ->
     (*Logs.app (fun m -> m "%s intent is none, keeping nothing" pkg);*)
     let remove = List.map fst sorted in
-    List.iter (fun pkg -> Logs.app (fun m -> m "ARCHIVING (none) %s" pkg))
+    List.iter (fun pkg -> Logs.app (fun m -> m "CANDIDATE (none) %s" pkg))
       remove;
     remove
   | _ ->
@@ -186,7 +186,7 @@ let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
     in
     let int = Mintent.M.string_of_intent intent in
     Logs.warn (fun m -> m "%s intent is %s (not handled)" pkg int);
-    List.iter (fun pkg -> Logs.app (fun m -> m "ARCHIVING (%s) %s" int pkg))
+    List.iter (fun pkg -> Logs.app (fun m -> m "CANDIDATE (%s) %s" int pkg))
       remove;
     remove
 
@@ -403,7 +403,7 @@ let jump () opam_repository pkgs pkg_all remove_file =
       let* lines = Bos.OS.File.read_lines (Fpath.v filename) in
       let pkgs =
         List.fold_left (fun acc line ->
-            if String.starts_with ~prefix:"ARCHIVING" line then
+            if String.starts_with ~prefix:"CANDIDATE" line then
               let second_space = succ (String.index_from line 10 ' ') in
               let pkg =
                 String.sub line second_space (String.length line - second_space)
