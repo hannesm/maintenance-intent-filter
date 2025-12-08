@@ -381,11 +381,13 @@ let is_installable opams opam =
   deps_good [] current_deps
 
 let ignore_packages = S.of_list [
-    "ocaml-variants.4.00.1+mirage-xen" ; (* "xenbigarray" { post } *)
     "conf-freeglut.1" ; (* { build & os-distribution != "debian" & os-distribution != "ubuntu" & not os-distribution = "ol" | not os-version < "9" } *)
     "ocaml-option-spacetime.1" ; (* "ocaml-variants" { post & >= "4.12.0~" & < "4.12" } *)
     "ocamlmig.5.2-20250129" ; (* "ocamlformat-rpc-lib" { "1" = "0" & = version } *)
     "ocamlmig.5.2-20250228" ; (* "ocamlformat-rpc-lib" { "1" = "0" & = version } *)
+    "ocamlmig.5.2-20250228" ; (* "ocamlformat-rpc-lib" { "1" = "0" & = version } *)
+    "ocamlmig.5.3-20250429" ; (* "ocamlformat-rpc-lib" { "1" = "0" & = version } *)
+    "ocamlmig.5.4-20251020" ; (* "ocamlformat-rpc-lib" { "1" = "0" & = version } *)
 ]
 
 let jump () opam_repository pkgs pkg_all remove_file =
