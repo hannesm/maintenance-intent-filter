@@ -391,7 +391,10 @@ let ignore_packages = S.of_list [
 ]
 
 let to_ignore = S.of_list [
-    "dune" ; (* for the rocq folks *)
+    "chrome-trace" ; "dune" ; "dune-action-plugin" ; "dune-build-info" ;
+    "dune-configurator" ; "dune-glob" ; "dune-private-libs" ; "dune-rpc" ;
+    "dune-rpc-lwt" ; "dune-site" ; "dyn" ; "ocamlc-loc" ; "ordering" ;
+    "stdune" ; "xdg" ; "fs-io" ; "top-closure" ; (* for the rocq folks *)
 ]
 
 let jump () opam_repository pkgs pkg_all remove_file =
