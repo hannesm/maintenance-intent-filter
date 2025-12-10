@@ -87,7 +87,7 @@ let eval_pkgs pkg_dir pkgs pkg_all =
 
 let should_consider ?excluded path =
   if Fpath.filename path = "opam" then
-    let name, version = pkg_name_and_version path in
+    let _name, version = pkg_name_and_version path in
     let is_excluded = match excluded with
       | None -> false
       | Some x -> List.mem version x
@@ -101,7 +101,7 @@ let should_consider ?excluded path =
         in
         OpamFile.OPAM.read opam_file
       in
-      Some (name, version, opam)
+      Some (version, opam)
   else
     None
 
@@ -111,7 +111,7 @@ let find_opams_latest_first pkg_dir pkg =
     let* opams = acc in
     match should_consider path with
     | None -> Ok opams
-    | Some (_, v, opam) -> Ok ((v, opam) :: opams)
+    | Some p -> Ok (p :: opams)
   in
   let* opams =
     Bos.OS.Dir.fold_contents foreach (Ok []) Fpath.(pkg_dir / pkg)
@@ -428,10 +428,13 @@ let jump () opam_repository pkgs pkg_all remove_file =
       (* Phase 1 for real: figure opam file, x-maintenance-intent, solve what to retain *)
       List.fold_left (fun acc pkg ->
           let* acc = acc in
-          let* sorted = find_opams_latest_first pkg_dir pkg in
-          let intent = decode_intent pkg (snd (List.hd sorted)) in
-          let to_remove = eval_intent contexts pkg sorted intent in
-          Ok (to_remove @ acc))
+          if S.mem pkg to_ignore then
+            Ok acc
+          else
+            let* sorted = find_opams_latest_first pkg_dir pkg in
+            let intent = decode_intent pkg (snd (List.hd sorted)) in
+            let to_remove = eval_intent contexts pkg sorted intent in
+            Ok (to_remove @ acc))
         (Ok []) pkgs
   in
   Logs.app (fun m -> m "PHASE1 completed with %u packages" (List.length to_remove));
@@ -451,13 +454,11 @@ let jump () opam_repository pkgs pkg_all remove_file =
   let foreach path acc =
     match should_consider ~excluded:to_remove path with
     | None -> acc
-    | Some (name, pkg_version, opam) ->
+    | Some (pkg_version, opam) ->
       let r, exp = is_installable all_opams opam in
       if r then
         acc
       else if S.mem pkg_version ignore_packages then
-        acc
-      else if S.mem name to_ignore then
         acc
       else
         (Logs.app (fun m -> m "%s would not be installable, due to: %a"
