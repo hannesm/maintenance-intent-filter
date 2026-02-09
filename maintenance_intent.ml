@@ -148,7 +148,7 @@ let decode_intent pkg opam =
     Logs.warn (fun m -> m "%s invalid intent: %s, using any" pkg intent);
     [ Mintent.M.Last max_int ]
 
-let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
+let eval_intent only_none contexts pkg sorted (intent : Mintent.M.intent) =
   match intent with
   | Mintent.M.Last x :: [] when x = max_int ->
     (* if any, we output all *)
@@ -161,7 +161,7 @@ let eval_intent contexts pkg sorted (intent : Mintent.M.intent) =
     (* Logs.app (fun m -> m "%s intent is any" pkg); *)
     List.iter (fun pkg -> Logs.app (fun m -> m "CANDIDATE (any) %s" pkg)) remove;
     remove
-  | Mintent.M.Last 1 :: [] ->
+  | Mintent.M.Last 1 :: [] when not only_none ->
     (* TODO do we need to filter out pre-releases if they're the latest? *)
     (* latest! we go through all ocaml versions and find the latest package *)
     let keeping = solve_by_ocaml_version contexts pkg in
@@ -414,7 +414,7 @@ let rec clean_up acc orphans = match Miou.care orphans with
       | Some pkg_version -> clean_up (pkg_version :: acc) orphans
       | None -> clean_up acc orphans
 
-let jump () opam_repository pkgs pkg_all remove_file =
+let jump () opam_repository pkgs pkg_all remove_file only_none =
   OpamCoreConfig.update ();
   Miou.run @@ fun () ->
   let ( let* ) = Result.bind in
@@ -450,7 +450,7 @@ let jump () opam_repository pkgs pkg_all remove_file =
         else
           let* sorted = find_opams_latest_first pkg_dir pkg in
           let intent = decode_intent pkg (snd (List.hd sorted)) in
-          Ok (eval_intent contexts pkg sorted intent) in
+          Ok (eval_intent only_none contexts pkg sorted intent) in
       let fn1 acc to_remove = match acc, to_remove with
         | Error _ as err, _ -> err
         | _, Error exn -> error_msgf "%s" (Printexc.to_string exn)
@@ -540,6 +540,10 @@ let setup_log =
         $ Fmt_cli.style_renderer ()
         $ Logs_cli.level ())
 
+let only_none =
+  let doc = "Consider only x-maintenance-intent: [ \"(none)\" ]" in
+  Arg.(value & flag & info ~doc ["only-none"])
+
 let pkg =
   let doc = "Archive this package (may be package name or package.version)" in
   Arg.(value & opt_all string [] & info ~doc ["pkg"])
@@ -559,7 +563,7 @@ let remove_file =
 let cmd =
   let info = Cmd.info "maintenance-intent" ~version:"%%VERSION_NUM%%"
   and term =
-    Term.(term_result (const jump $ setup_log $ opam_repository $ pkg $ pkg_all $ remove_file))
+    Term.(term_result (const jump $ setup_log $ opam_repository $ pkg $ pkg_all $ remove_file $ only_none))
   in
   Cmd.v info term
 
